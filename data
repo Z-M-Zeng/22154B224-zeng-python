@@ -1,0 +1,133 @@
+import pandas as pd
+import requests
+import time
+import random
+import json
+from datetime import datetime, timedelta
+
+# 定义股票列表
+stocks = [
+    {"code": "600519", "name": "贵州茅台", "market": "1"},  # 1表示上交所
+    {"code": "00700", "name": "腾讯控股", "market": "2"},  # 2表示港交所
+    {"code": "002594", "name": "比亚迪", "market": "0"},  # 0表示深交所
+    {"code": "300750", "name": "宁德时代", "market": "0"},  # 0表示深交所
+    {"code": "601398", "name": "工商银行", "market": "1"}   # 1表示上交所
+]
+
+# 设置日期范围
+start_date = "2018-01-01"
+end_date = "2023-12-30"
+
+# 设置请求头，模拟浏览器访问
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Referer': 'http://quote.eastmoney.com/'
+}
+
+# 创建Excel写入器
+with pd.ExcelWriter('stock_dataset.xlsx') as writer:
+    for stock in stocks:
+        print(f"爬取{stock['name']}数据...")
+        code = stock['code']
+        name = stock['name']
+        market = stock['market']
+        
+        # 根据市场类型构建不同的API请求
+        if market == "2":  # 港股
+            # 港股使用特殊的API
+            url = f"http://push2his.eastmoney.com/api/qt/stock/kline/get"
+            params = {
+                'secid': f"{market}.{code}",
+                'ut': 'fa5fd1943c7b386f172d6893dbfba10b',
+                'fields1': 'f1,f2,f3,f4,f5,f6',
+                'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
+                'klt': 101,  # 日线
+                'fqt': 0,    # 不复权
+                'beg': start_date.replace('-', ''),
+                'end': end_date.replace('-', ''),
+                'lmt': 10000  # 获取尽可能多的数据
+            }
+        else:  # A股
+            url = f"http://push2his.eastmoney.com/api/qt/stock/kline/get"
+            params = {
+                'secid': f"{market}.{code}",
+                'ut': 'fa5fd1943c7b386f172d6893dbfba10b',
+                'fields1': 'f1,f2,f3,f4,f5,f6',
+                'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
+                'klt': 101,  # 日线
+                'fqt': 0,    # 不复权
+                'beg': start_date.replace('-', ''),
+                'end': end_date.replace('-', ''),
+                'lmt': 10000  # 获取尽可能多的数据
+            }
+        
+        try:
+            # 发送请求获取数据
+            response = requests.get(url, params=params, headers=headers)
+            data = response.json()
+            
+            # 调试信息：打印API返回的原始数据结构
+            print(f"{name} API返回状态: {data.get('rc', '未知')}")
+            
+            # 检查API返回是否有效
+            if not data or 'data' not in data:
+                print(f"未获取到{name}的数据，API返回格式异常: {data}")
+                continue
+            
+            # 处理港股和A股的不同返回格式
+            klines = data['data'].get('klines')
+            if not klines:
+                print(f"{name}在指定日期范围内没有数据或API返回空结果")
+                continue
+            
+            # 提取数据
+            records = []
+            for line in klines:
+                items = line.split(',')
+                if len(items) >= 6:
+                    try:
+                        record = {
+                            '日期': items[0],
+                            '开盘价': float(items[1]),
+                            '最高价': float(items[2]),
+                            '最低价': float(items[3]),
+                            '收盘价': float(items[4]),
+                            '成交量': int(float(items[5]))
+                        }
+                        records.append(record)
+                    except (ValueError, IndexError) as e:
+                        print(f"解析{name}数据时出错: {e}, 跳过该行: {line}")
+                        continue
+            
+            # 创建DataFrame
+            if not records:
+                print(f"{name}没有有效的数据记录")
+                continue
+                
+            df = pd.DataFrame(records)
+            
+            # 过滤日期范围
+            df['日期'] = pd.to_datetime(df['日期'])
+            mask = (df['日期'] >= start_date) & (df['日期'] <= end_date)
+            df = df.loc[mask]
+            
+            # 确保数据按日期排序
+            df = df.sort_values('日期')
+            
+            # 格式化价格数据（保留两位小数）
+            for col in ['开盘价', '最高价', '最低价', '收盘价']:
+                df[col] = df[col].round(2)
+            
+            # 保存到Excel
+            sheet_name = f"{code}_{name}"
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"{name}数据已保存到{sheet_name}工作表，共{len(df)}条记录")
+            
+            # 添加随机延时，避免频繁请求被封
+            time.sleep(random.uniform(1, 3))
+            
+        except Exception as e:
+            print(f"爬取{name}数据时出错: {e}")
+            print(f"API响应内容: {response.text[:500]}...")  # 打印部分响应内容用于调试
+
+print("所有股票数据已爬取并保存到stock_dataset.xlsx")
